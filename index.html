@@ -272,7 +272,6 @@
 <script>
 (() => {
   // ==================== 配置 ====================
-  // 后端 API 端点（EdgeOne Pages 自动映射 /api/chat；本地开发时指向同源）
   const API_ENDPOINT = '/api/chat';
   const STORAGE_KEY = 'deepseek_chat_cloud';
   const MAX_RETRIES = 2, RETRY_DELAY = 2000;
@@ -280,9 +279,7 @@
   let conversations = [], currentConvId = '';
   let currentModel = 'auto', deepThinkEnabled = false, searchEnabled = false;
   let userLockedScroll = false;
-  let lastStreamContent = '', lastStreamReasoning = '';
 
-  // DOM 缓存
   const $ = (id) => document.getElementById(id);
   const welcomeArea = $('welcomeArea'), chatMessages = $('chatMessages');
   const inputField = $('inputField'), sendBtn = $('sendBtn');
@@ -294,7 +291,7 @@
   const modelSwitcher = $('modelSwitcher'), welcomeTitle = $('welcomeTitle');
   const voiceBtn = $('voiceBtn');
 
-  // ==================== Markdown 配置 ====================
+  // ==================== Markdown ====================
   marked.setOptions({
     highlight: (code, lang) => hljs && lang && hljs.getLanguage(lang) ? hljs.highlight(code, {language: lang}).value : code,
     breaks: true, gfm: true
@@ -352,7 +349,7 @@
     save(); renderSidebar(); headerTitle.textContent = conv.title;
   }
 
-  // ==================== 侧边栏渲染 ====================
+  // ==================== 侧边栏 ====================
   function renderSidebar() {
     convList.innerHTML = '';
     conversations.forEach(c => {
@@ -498,7 +495,7 @@
     };
   }
 
-  // ==================== 流式输出 ====================
+  // ==================== 流式输出与恢复 ====================
   function appendUserMsg(text) {
     const msg = { role: 'user', content: text };
     getConv().messages.push(msg);
@@ -529,37 +526,31 @@
     const msgs = conv.messages.slice();
     conv.requestMessages = msgs;
     const { bubble, msg: amsg, sid } = appendAssistantPlaceholder();
-    lastStreamContent = ''; lastStreamReasoning = '';
-    await streamWithReconnect(conv, amsg, sid, msgs, 0);
+    await streamWithReconnect(conv, amsg, sid, msgs, 0, false);
   }
 
-  async function streamWithReconnect(conv, amsg, sid, baseMsgs, retry) {
+  async function streamWithReconnect(conv, amsg, sid, baseMsgs, retry, isResume = false) {
     conv.abortController = new AbortController();
     conv.streaming = true; renderSidebar(); updateSendBtn();
     let content = amsg.content || '', reasoning = amsg.reasoning || '';
-    let thinkingDetails = null, lastSave = Date.now();
+    let thinkingDetails = null;
+    let lastSave = Date.now();
 
     const saveProgress = () => { if (Date.now() - lastSave > 2000) { lastSave = Date.now(); save(); } };
     const updateUI = () => {
       const bubble = getBubbleBySid(sid); if (!bubble) return;
-      if (reasoning !== lastStreamReasoning) {
-        if (!thinkingDetails && reasoning) {
-          thinkingDetails = document.createElement('details'); thinkingDetails.className = 'thinking-block'; thinkingDetails.open = true;
-          thinkingDetails.innerHTML = '<summary>💭 思考过程</summary><div class="thinking-text"></div>';
-          bubble.insertBefore(thinkingDetails, bubble.firstChild);
-        }
-        if (thinkingDetails) thinkingDetails.querySelector('.thinking-text').textContent = reasoning;
-        lastStreamReasoning = reasoning;
+      if (reasoning && !thinkingDetails) {
+        thinkingDetails = document.createElement('details'); thinkingDetails.className = 'thinking-block'; thinkingDetails.open = true;
+        thinkingDetails.innerHTML = '<summary>💭 思考过程</summary><div class="thinking-text"></div>';
+        bubble.insertBefore(thinkingDetails, bubble.firstChild);
       }
-      if (content !== lastStreamContent) {
-        let ans = bubble.querySelector('.answer-body');
-        if (!ans) { ans = document.createElement('div'); ans.className = 'answer-body'; bubble.appendChild(ans); }
-        ans.innerHTML = md(content);
-        enhanceBubble(bubble);
-        if (!bubble.querySelector('.streaming-cursor')) {
-          const cursor = document.createElement('span'); cursor.className = 'streaming-cursor'; bubble.appendChild(cursor);
-        }
-        lastStreamContent = content;
+      if (thinkingDetails) thinkingDetails.querySelector('.thinking-text').textContent = reasoning;
+      let ans = bubble.querySelector('.answer-body');
+      if (!ans) { ans = document.createElement('div'); ans.className = 'answer-body'; bubble.appendChild(ans); }
+      ans.innerHTML = md(content);
+      enhanceBubble(bubble);
+      if (!bubble.querySelector('.streaming-cursor')) {
+        const cursor = document.createElement('span'); cursor.className = 'streaming-cursor'; bubble.appendChild(cursor);
       }
       if (!userLockedScroll && conv.id === currentConvId) chatMessages.scrollTop = chatMessages.scrollHeight;
       saveProgress();
@@ -567,7 +558,10 @@
 
     try {
       const msgsToSend = [...baseMsgs];
-      if (retry > 0 && content) msgsToSend.push({ role: 'system', content: `【网络中断续传】请从以下断点继续：${content.slice(-200)}` });
+      if ((retry > 0 || isResume) && content) {
+        msgsToSend.push({ role: 'assistant', content: content });
+        msgsToSend.push({ role: 'system', content: `【网络中断续传】请从上述已生成内容末尾继续，不要重复。` });
+      }
 
       const resp = await fetch(API_ENDPOINT, {
         method: 'POST',
@@ -598,19 +592,19 @@
         }
       }
       updateUI();
-      const bubble = getBubbleBySid(sid);
-      if (bubble) { const c = bubble.querySelector('.streaming-cursor'); if (c) c.remove(); }
+      const bubble = getBubbleBySid(sid); if (bubble) { const c = bubble.querySelector('.streaming-cursor'); if (c) c.remove(); }
       if (thinkingDetails) thinkingDetails.open = false;
     } catch (e) {
       if (e.name === 'AbortError') {
         amsg.content = content + ' [已中止]';
+        updateUI();
       } else if (retry < MAX_RETRIES && !conv.abortController?.signal.aborted) {
         await new Promise(r => setTimeout(r, RETRY_DELAY));
-        return streamWithReconnect(conv, amsg, sid, baseMsgs, retry + 1);
+        return streamWithReconnect(conv, amsg, sid, baseMsgs, retry + 1, isResume);
       } else {
         amsg.content = content + ' [连接失败]';
+        updateUI();
       }
-      updateUI();
     } finally {
       if (retry >= MAX_RETRIES || !conv.streaming || retry === 0) {
         conv.abortController = null; conv.streaming = false;
@@ -671,22 +665,24 @@
     rec.start();
   });
 
-  // ==================== 恢复对话 ====================
+  // ==================== 恢复未完成的对话 ====================
   async function resumeStreams() {
     for (const conv of conversations) {
       if (conv.streaming && conv.requestMessages && conv.messages.length) {
         const last = conv.messages[conv.messages.length - 1];
         if (last.role === 'assistant' && last.streamingId) {
+          console.log('恢复对话:', conv.id);
           conv.abortController = new AbortController();
-          await streamWithReconnect(conv, last, last.streamingId, conv.requestMessages, 0);
+          await streamWithReconnect(conv, last, last.streamingId, conv.requestMessages, 0, true);
         }
       }
     }
   }
 
+  // ==================== 初始化 ====================
   function init() {
     const data = load();
-    conversations = (data.conversations || []).map(c => ({ ...c, streaming: false, abortController: null }));
+    conversations = (data.conversations || []).map(c => ({ ...c, abortController: null }));
     currentConvId = data.currentId || (conversations[0]?.id || '');
     if (!conversations.length) { const c = createConv(); conversations.push(c); currentConvId = c.id; }
     else if (!conversations.find(c => c.id === currentConvId)) currentConvId = conversations[0].id;

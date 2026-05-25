@@ -1,7 +1,7 @@
 {
   "name": "deepseek-chat-app",
-  "version": "1.0.0",
-  "description": "DeepSeek 风格 AI 聊天应用 · 支持 EdgeOne Pages 部署",
+  "version": "2.0.0",
+  "description": "DeepSeek 风格 AI 聊天 · 流式输出 · 断点续传",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
