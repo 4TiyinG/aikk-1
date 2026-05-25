@@ -271,7 +271,6 @@
 
 <script>
 (() => {
-  // ==================== 配置 ====================
   const API_ENDPOINT = '/api/chat';
   const STORAGE_KEY = 'deepseek_chat_cloud';
   const MAX_RETRIES = 2, RETRY_DELAY = 2000;
@@ -291,7 +290,6 @@
   const modelSwitcher = $('modelSwitcher'), welcomeTitle = $('welcomeTitle');
   const voiceBtn = $('voiceBtn');
 
-  // ==================== Markdown ====================
   marked.setOptions({
     highlight: (code, lang) => hljs && lang && hljs.getLanguage(lang) ? hljs.highlight(code, {language: lang}).value : code,
     breaks: true, gfm: true
@@ -299,11 +297,9 @@
   const md = (text) => marked.parse(text);
   const esc = (s) => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
 
-  // ==================== 存储 ====================
   const load = () => { try { const v = localStorage.getItem(STORAGE_KEY); return v ? JSON.parse(v) : { conversations:[], currentId:'' }; } catch { return { conversations:[], currentId:'' }; } };
   const save = () => { localStorage.setItem(STORAGE_KEY, JSON.stringify({ conversations, currentId: currentConvId })); };
 
-  // ==================== 对话管理 ====================
   const getConv = () => conversations.find(c => c.id === currentConvId);
   const getMsgs = () => { const c = getConv(); return c ? c.messages : []; };
 
@@ -349,7 +345,6 @@
     save(); renderSidebar(); headerTitle.textContent = conv.title;
   }
 
-  // ==================== 侧边栏 ====================
   function renderSidebar() {
     convList.innerHTML = '';
     conversations.forEach(c => {
@@ -388,7 +383,6 @@
   function openSidebar() { sidebarPanel.classList.add('open'); sidebarBackdrop.classList.add('open'); }
   function closeSidebar() { sidebarPanel.classList.remove('open'); sidebarBackdrop.classList.remove('open'); }
 
-  // ==================== 消息渲染 ====================
   function renderChat() {
     chatMessages.innerHTML = '';
     const conv = getConv();
@@ -474,7 +468,6 @@
     document.body.appendChild(overlay);
   }
 
-  // ==================== 编辑消息 ====================
   function editMessage(row, bubble, msg) {
     const orig = msg.content;
     bubble.style.display = 'none';
@@ -495,7 +488,6 @@
     };
   }
 
-  // ==================== 流式输出与恢复 ====================
   function appendUserMsg(text) {
     const msg = { role: 'user', content: text };
     getConv().messages.push(msg);
@@ -535,12 +527,32 @@
     let content = amsg.content || '', reasoning = amsg.reasoning || '';
     let thinkingDetails = null;
     let lastSave = Date.now();
+    let lastRender = 0; // 节流用
 
     const saveProgress = () => { if (Date.now() - lastSave > 2000) { lastSave = Date.now(); save(); } };
+
+    // 即时渲染函数（移除 requestAnimationFrame，直接调用，添加微节流）
     const updateUI = () => {
-      const bubble = getBubbleBySid(sid); if (!bubble) return;
+      const now = Date.now();
+      if (now - lastRender < 16) { // 大约60fps节流，保持流畅
+        if (!updateUI.pending) {
+          updateUI.pending = true;
+          requestAnimationFrame(() => { updateUI.pending = false; performUpdate(); });
+        }
+        return;
+      }
+      lastRender = now;
+      performUpdate();
+    };
+    updateUI.pending = false;
+
+    const performUpdate = () => {
+      const bubble = getBubbleBySid(sid);
+      if (!bubble) return;
       if (reasoning && !thinkingDetails) {
-        thinkingDetails = document.createElement('details'); thinkingDetails.className = 'thinking-block'; thinkingDetails.open = true;
+        thinkingDetails = document.createElement('details');
+        thinkingDetails.className = 'thinking-block';
+        thinkingDetails.open = true;
         thinkingDetails.innerHTML = '<summary>💭 思考过程</summary><div class="thinking-text"></div>';
         bubble.insertBefore(thinkingDetails, bubble.firstChild);
       }
@@ -572,38 +584,46 @@
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
       const reader = resp.body.getReader();
-      const dec = new TextDecoder(); let buf = '';
+      const dec = new TextDecoder();
+      let buf = '';
+
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
         buf += dec.decode(value, { stream: true });
-        const lines = buf.split('\n'); buf = lines.pop() || '';
+        const lines = buf.split('\n');
+        buf = lines.pop() || '';
         for (const line of lines) {
-          const t = line.trim(); if (!t || !t.startsWith('data:')) continue;
-          const d = t.slice(5).trim(); if (d === '[DONE]') break;
+          const t = line.trim();
+          if (!t || !t.startsWith('data:')) continue;
+          const d = t.slice(5).trim();
+          if (d === '[DONE]') break;
           try {
             const j = JSON.parse(d);
             const delta = j.choices?.[0]?.delta || {};
             if (delta.reasoning_content) reasoning += delta.reasoning_content;
             if (delta.content) content += delta.content;
-            amsg.reasoning = reasoning; amsg.content = content;
-            requestAnimationFrame(updateUI);
+            amsg.reasoning = reasoning;
+            amsg.content = content;
+            updateUI(); // 立即调度渲染（带节流）
           } catch {}
         }
       }
-      updateUI();
-      const bubble = getBubbleBySid(sid); if (bubble) { const c = bubble.querySelector('.streaming-cursor'); if (c) c.remove(); }
+      // 最终渲染确保无遗漏
+      performUpdate();
+      const bubble = getBubbleBySid(sid);
+      if (bubble) { const c = bubble.querySelector('.streaming-cursor'); if (c) c.remove(); }
       if (thinkingDetails) thinkingDetails.open = false;
     } catch (e) {
       if (e.name === 'AbortError') {
         amsg.content = content + ' [已中止]';
-        updateUI();
+        performUpdate();
       } else if (retry < MAX_RETRIES && !conv.abortController?.signal.aborted) {
         await new Promise(r => setTimeout(r, RETRY_DELAY));
         return streamWithReconnect(conv, amsg, sid, baseMsgs, retry + 1, isResume);
       } else {
         amsg.content = content + ' [连接失败]';
-        updateUI();
+        performUpdate();
       }
     } finally {
       if (retry >= MAX_RETRIES || !conv.streaming || retry === 0) {
@@ -615,7 +635,6 @@
 
   function sendMessage() { sendInternal(false); }
 
-  // ==================== 按钮与界面 ====================
   function updateSendBtn() {
     const conv = getConv();
     if (conv?.streaming && conv.id === currentConvId) {
@@ -665,7 +684,6 @@
     rec.start();
   });
 
-  // ==================== 恢复未完成的对话 ====================
   async function resumeStreams() {
     for (const conv of conversations) {
       if (conv.streaming && conv.requestMessages && conv.messages.length) {
@@ -679,7 +697,6 @@
     }
   }
 
-  // ==================== 初始化 ====================
   function init() {
     const data = load();
     conversations = (data.conversations || []).map(c => ({ ...c, abortController: null }));
