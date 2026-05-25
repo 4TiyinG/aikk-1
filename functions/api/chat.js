@@ -1,4 +1,4 @@
-// cloud-functions/api/chat.js - EdgeOne Pages Cloud Functions
+// cloud-functions/api/chat.js - EdgeOne Pages Cloud Functions (修复流式输出)
 // 映射为 /api/chat
 
 const API_URL = 'https://api.iamhc.cn/v1/chat/completions';
@@ -7,6 +7,7 @@ const API_KEY = 'sk-7LRggVLwgm5A7aai7tJPllYtd6lXrTY4PSfqF6feGd0YCELP';
 export async function onRequest(context) {
   const { request, env } = context;
 
+  // 处理 CORS 预检请求
   if (request.method === 'OPTIONS') {
     return new Response(null, {
       headers: {
@@ -55,7 +56,7 @@ export async function onRequest(context) {
       });
     }
 
-    // 流式转发
+    // 创建可读流，用于流式转发
     const { readable, writable } = new TransformStream();
     const writer = writable.getWriter();
     const reader = response.body.getReader();
@@ -67,8 +68,9 @@ export async function onRequest(context) {
         while (true) {
           const { done, value } = await reader.read();
           if (done) {
+            // 处理残留的 buffer
             if (buffer.trim()) {
-              await writer.write(new TextEncoder().encode(buffer + '\n'));
+              await writer.write(new TextEncoder().encode(buffer.trim() + '\n'));
             }
             await writer.write(new TextEncoder().encode('data: [DONE]\n\n'));
             break;
@@ -78,12 +80,12 @@ export async function onRequest(context) {
           buffer = lines.pop() || '';
           for (const line of lines) {
             if (line.trim()) {
-              await writer.write(new TextEncoder().encode(line + '\n'));
+              await writer.write(new TextEncoder().encode(line.trim() + '\n'));
             }
           }
         }
       } catch (e) {
-        console.error('流错误:', e);
+        console.error('流式传输错误:', e);
       } finally {
         await writer.close();
       }
