@@ -1,0 +1,17 @@
+{
+  "name": "deepseek-chat-app",
+  "version": "1.0.0",
+  "description": "DeepSeek 风格 AI 聊天应用 · 支持 EdgeOne Pages 部署",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
