@@ -271,6 +271,7 @@
 
 <script>
 (() => {
+  // 配置
   const API_ENDPOINT = '/api/chat';
   const STORAGE_KEY = 'deepseek_chat_cloud';
   const MAX_RETRIES = 2, RETRY_DELAY = 2000;
@@ -279,6 +280,7 @@
   let currentModel = 'auto', deepThinkEnabled = false, searchEnabled = false;
   let userLockedScroll = false;
 
+  // DOM
   const $ = (id) => document.getElementById(id);
   const welcomeArea = $('welcomeArea'), chatMessages = $('chatMessages');
   const inputField = $('inputField'), sendBtn = $('sendBtn');
@@ -290,127 +292,63 @@
   const modelSwitcher = $('modelSwitcher'), welcomeTitle = $('welcomeTitle');
   const voiceBtn = $('voiceBtn');
 
-  marked.setOptions({
-    highlight: (code, lang) => hljs && lang && hljs.getLanguage(lang) ? hljs.highlight(code, {language: lang}).value : code,
-    breaks: true, gfm: true
-  });
+  // Markdown
+  marked.setOptions({ highlight: (code, lang) => hljs && lang && hljs.getLanguage(lang) ? hljs.highlight(code, {language: lang}).value : code, breaks: true, gfm: true });
   const md = (text) => marked.parse(text);
   const esc = (s) => s.replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
 
+  // 本地存储
   const load = () => { try { const v = localStorage.getItem(STORAGE_KEY); return v ? JSON.parse(v) : { conversations:[], currentId:'' }; } catch { return { conversations:[], currentId:'' }; } };
   const save = () => { localStorage.setItem(STORAGE_KEY, JSON.stringify({ conversations, currentId: currentConvId })); };
 
+  // 对话管理
   const getConv = () => conversations.find(c => c.id === currentConvId);
   const getMsgs = () => { const c = getConv(); return c ? c.messages : []; };
+  function createConv() { return { id: 'c_' + Date.now(), title: '新对话', messages: [], manualTitle: false, streaming: false, abortController: null, requestMessages: null }; }
+  function newConversation() { const conv = createConv(); conversations.unshift(conv); currentConvId = conv.id; save(); renderSidebar(); renderChat(); updateSendBtn(); }
+  function switchConv(id) { if (id === currentConvId) return closeSidebar(); currentConvId = id; save(); renderChat(); renderSidebar(); updateSendBtn(); closeSidebar(); }
+  function deleteConv(id) { const conv = conversations.find(c => c.id === id); if (conv?.abortController) { conv.abortController.abort(); conv.streaming = false; } conversations = conversations.filter(c => c.id !== id); if (currentConvId === id) { if (conversations.length) currentConvId = conversations[0].id; else { const c = createConv(); conversations.push(c); currentConvId = c.id; } } save(); renderSidebar(); renderChat(); updateSendBtn(); }
+  function renameConv(id, title) { const c = conversations.find(c => c.id === id); if (c) { c.title = title; c.manualTitle = true; save(); renderSidebar(); } }
+  function autoTitle() { const conv = getConv(); if (!conv || conv.manualTitle) return; const u = conv.messages.find(m => m.role === 'user'); conv.title = u ? u.content.slice(0, 20) + (u.content.length > 20 ? '…' : '') : '新对话'; save(); renderSidebar(); headerTitle.textContent = conv.title; }
 
-  function createConv() {
-    return { id: 'c_' + Date.now(), title: '新对话', messages: [], manualTitle: false, streaming: false, abortController: null, requestMessages: null };
-  }
-
-  function newConversation() {
-    const conv = createConv();
-    conversations.unshift(conv);
-    currentConvId = conv.id;
-    save(); renderSidebar(); renderChat(); updateSendBtn();
-  }
-
-  function switchConv(id) {
-    if (id === currentConvId) return closeSidebar();
-    currentConvId = id;
-    save(); renderChat(); renderSidebar(); updateSendBtn();
-    closeSidebar();
-  }
-
-  function deleteConv(id) {
-    const conv = conversations.find(c => c.id === id);
-    if (conv?.abortController) { conv.abortController.abort(); conv.streaming = false; }
-    conversations = conversations.filter(c => c.id !== id);
-    if (currentConvId === id) {
-      if (conversations.length) currentConvId = conversations[0].id;
-      else { const c = createConv(); conversations.push(c); currentConvId = c.id; }
-    }
-    save(); renderSidebar(); renderChat(); updateSendBtn();
-  }
-
-  function renameConv(id, title) {
-    const c = conversations.find(c => c.id === id);
-    if (c) { c.title = title; c.manualTitle = true; save(); renderSidebar(); }
-  }
-
-  function autoTitle() {
-    const conv = getConv();
-    if (!conv || conv.manualTitle) return;
-    const u = conv.messages.find(m => m.role === 'user');
-    conv.title = u ? u.content.slice(0, 20) + (u.content.length > 20 ? '…' : '') : '新对话';
-    save(); renderSidebar(); headerTitle.textContent = conv.title;
-  }
-
+  // 侧边栏
   function renderSidebar() {
     convList.innerHTML = '';
     conversations.forEach(c => {
-      const div = document.createElement('div');
-      div.className = `conv-item ${c.id === currentConvId ? 'active' : ''}`;
-      const span = document.createElement('span');
-      span.className = 'conv-name'; span.textContent = c.title;
+      const div = document.createElement('div'); div.className = `conv-item ${c.id === currentConvId ? 'active' : ''}`;
+      const span = document.createElement('span'); span.className = 'conv-name'; span.textContent = c.title;
       let pressTimer;
-      span.addEventListener('pointerdown', (e) => {
-        pressTimer = setTimeout(() => {
-          const newTitle = prompt('修改名称', c.title);
-          if (newTitle?.trim()) renameConv(c.id, newTitle.trim());
-        }, 800);
-        e.preventDefault();
-      });
+      span.addEventListener('pointerdown', (e) => { pressTimer = setTimeout(() => { const newTitle = prompt('修改名称', c.title); if (newTitle?.trim()) renameConv(c.id, newTitle.trim()); }, 800); e.preventDefault(); });
       span.addEventListener('pointerup', () => clearTimeout(pressTimer));
       span.addEventListener('pointercancel', () => clearTimeout(pressTimer));
       div.appendChild(span);
-
       const meta = document.createElement('div'); meta.className = 'conv-meta';
-      if (c.streaming) {
-        const spinner = document.createElement('span'); spinner.className = 'conv-stream-spinner'; meta.appendChild(spinner);
-        const stopBtn = document.createElement('button'); stopBtn.className = 'conv-stop'; stopBtn.innerHTML = '⏹';
-        stopBtn.onclick = (e) => { e.stopPropagation(); c.abortController?.abort(); };
-        meta.appendChild(stopBtn);
-      }
-      const delBtn = document.createElement('button'); delBtn.className = 'conv-delete'; delBtn.innerHTML = '🗑';
-      delBtn.onclick = (e) => { e.stopPropagation(); deleteConv(c.id); };
-      meta.appendChild(delBtn);
-      div.appendChild(meta);
-      div.onclick = (e) => { if (!e.target.closest('button')) switchConv(c.id); };
+      if (c.streaming) { const spinner = document.createElement('span'); spinner.className = 'conv-stream-spinner'; meta.appendChild(spinner); const stopBtn = document.createElement('button'); stopBtn.className = 'conv-stop'; stopBtn.innerHTML = '⏹'; stopBtn.onclick = (e) => { e.stopPropagation(); c.abortController?.abort(); }; meta.appendChild(stopBtn); }
+      const delBtn = document.createElement('button'); delBtn.className = 'conv-delete'; delBtn.innerHTML = '🗑'; delBtn.onclick = (e) => { e.stopPropagation(); deleteConv(c.id); }; meta.appendChild(delBtn);
+      div.appendChild(meta); div.onclick = (e) => { if (!e.target.closest('button')) switchConv(c.id); };
       convList.appendChild(div);
     });
   }
-
   function openSidebar() { sidebarPanel.classList.add('open'); sidebarBackdrop.classList.add('open'); }
   function closeSidebar() { sidebarPanel.classList.remove('open'); sidebarBackdrop.classList.remove('open'); }
 
+  // 消息渲染
   function renderChat() {
     chatMessages.innerHTML = '';
-    const conv = getConv();
-    const msgs = conv ? conv.messages : [];
-    if (msgs.length > 0) {
-      welcomeArea.style.display = 'none'; chatMessages.classList.add('active');
-      msgs.forEach(m => {
-        const row = createRow(m);
-        chatMessages.appendChild(row);
-        enhanceBubble(row.querySelector('.message-bubble'));
-      });
-    } else {
-      welcomeArea.style.display = ''; chatMessages.classList.remove('active');
-    }
+    const conv = getConv(); const msgs = conv ? conv.messages : [];
+    if (msgs.length > 0) { welcomeArea.style.display = 'none'; chatMessages.classList.add('active'); msgs.forEach(m => { const row = createRow(m); chatMessages.appendChild(row); enhanceBubble(row.querySelector('.message-bubble')); }); }
+    else { welcomeArea.style.display = ''; chatMessages.classList.remove('active'); }
     scrollToBottom(true);
     if (conv) headerTitle.textContent = conv.title;
   }
 
   function createRow(msg, showActions = true) {
-    const row = document.createElement('div');
-    row.className = `message-row ${msg.role}`;
+    const row = document.createElement('div'); row.className = `message-row ${msg.role}`;
     if (msg.streamingId) row.dataset.sid = msg.streamingId;
-    const bubble = document.createElement('div');
-    bubble.className = 'message-bubble';
+    const bubble = document.createElement('div'); bubble.className = 'message-bubble';
     if (msg.streamingId) bubble.dataset.sid = msg.streamingId;
-    if (msg.role === 'user') {
-      bubble.textContent = msg.content;
-    } else {
+    if (msg.role === 'user') { bubble.textContent = msg.content; }
+    else {
       let html = '';
       if (msg.reasoning) html += `<details class="thinking-block"><summary>💭 思考过程</summary><div class="thinking-text">${esc(msg.reasoning)}</div></details>`;
       html += `<div class="answer-body">${msg.content ? md(msg.content) : '<span class="loading-spinner"></span>思考中...'}</div>`;
@@ -419,14 +357,8 @@
     row.appendChild(bubble);
     if (showActions) {
       const actions = document.createElement('div'); actions.className = 'message-actions';
-      if (msg.role === 'user') {
-        const editBtn = document.createElement('button'); editBtn.className = 'msg-btn'; editBtn.textContent = '编辑';
-        editBtn.onclick = () => editMessage(row, bubble, msg);
-        actions.appendChild(editBtn);
-      }
-      const copyBtn = document.createElement('button'); copyBtn.className = 'msg-btn'; copyBtn.textContent = '复制';
-      copyBtn.onclick = () => navigator.clipboard.writeText(bubble.textContent || bubble.innerText);
-      actions.appendChild(copyBtn);
+      if (msg.role === 'user') { const editBtn = document.createElement('button'); editBtn.className = 'msg-btn'; editBtn.textContent = '编辑'; editBtn.onclick = () => editMessage(row, bubble, msg); actions.appendChild(editBtn); }
+      const copyBtn = document.createElement('button'); copyBtn.className = 'msg-btn'; copyBtn.textContent = '复制'; copyBtn.onclick = () => navigator.clipboard.writeText(bubble.textContent || bubble.innerText); actions.appendChild(copyBtn);
       row.appendChild(actions);
     }
     return row;
@@ -437,42 +369,20 @@
   function enhanceBubble(bubble) {
     bubble.querySelectorAll('pre').forEach(pre => {
       if (pre.parentElement.classList.contains('code-block-wrapper')) return;
-      const wrapper = document.createElement('div'); wrapper.className = 'code-block-wrapper';
-      pre.parentNode.insertBefore(wrapper, pre); wrapper.appendChild(pre);
-      const copyBtn = document.createElement('button'); copyBtn.className = 'code-tool-btn code-copy-btn'; copyBtn.textContent = '复制';
-      copyBtn.onclick = (e) => { e.stopPropagation(); navigator.clipboard.writeText(pre.innerText).then(() => { copyBtn.textContent='已复制'; setTimeout(()=>copyBtn.textContent='复制',2000); }); };
-      wrapper.appendChild(copyBtn);
+      const wrapper = document.createElement('div'); wrapper.className = 'code-block-wrapper'; pre.parentNode.insertBefore(wrapper, pre); wrapper.appendChild(pre);
+      const copyBtn = document.createElement('button'); copyBtn.className = 'code-tool-btn code-copy-btn'; copyBtn.textContent = '复制'; copyBtn.onclick = (e) => { e.stopPropagation(); navigator.clipboard.writeText(pre.innerText).then(() => { copyBtn.textContent='已复制'; setTimeout(()=>copyBtn.textContent='复制',2000); }); }; wrapper.appendChild(copyBtn);
       const codeEl = pre.querySelector('code'); const lang = codeEl ? codeEl.className.replace('language-','') : '';
-      if (['html','htm','xhtml'].includes(lang)) {
-        const previewBtn = document.createElement('button'); previewBtn.className = 'code-tool-btn code-preview-btn'; previewBtn.textContent = '预览';
-        previewBtn.onclick = (e) => { e.stopPropagation(); showHtmlPreview(pre.textContent); };
-        wrapper.appendChild(previewBtn);
-      }
-      if (pre.textContent.split('\n').length > 20) {
-        pre.style.maxHeight = '12em'; pre.style.overflow = 'hidden'; pre.style.position = 'relative';
-        const mask = document.createElement('div'); mask.className = 'code-fold-mask'; pre.appendChild(mask);
-        const foldBtn = document.createElement('button'); foldBtn.className = 'code-tool-btn code-fold-btn'; foldBtn.textContent = '展开';
-        foldBtn.onclick = (e) => { e.stopPropagation(); const expanded = pre.classList.toggle('expanded'); pre.style.overflow = expanded ? 'auto' : 'hidden'; mask.style.display = expanded ? 'none' : 'block'; foldBtn.textContent = expanded ? '折叠' : '展开'; };
-        wrapper.appendChild(foldBtn);
-      }
+      if (['html','htm','xhtml'].includes(lang)) { const previewBtn = document.createElement('button'); previewBtn.className = 'code-tool-btn code-preview-btn'; previewBtn.textContent = '预览'; previewBtn.onclick = (e) => { e.stopPropagation(); showHtmlPreview(pre.textContent); }; wrapper.appendChild(previewBtn); }
+      if (pre.textContent.split('\n').length > 20) { pre.style.maxHeight = '12em'; pre.style.overflow = 'hidden'; pre.style.position = 'relative'; const mask = document.createElement('div'); mask.className = 'code-fold-mask'; pre.appendChild(mask); const foldBtn = document.createElement('button'); foldBtn.className = 'code-tool-btn code-fold-btn'; foldBtn.textContent = '展开'; foldBtn.onclick = (e) => { e.stopPropagation(); const expanded = pre.classList.toggle('expanded'); pre.style.overflow = expanded ? 'auto' : 'hidden'; mask.style.display = expanded ? 'none' : 'block'; foldBtn.textContent = expanded ? '折叠' : '展开'; }; wrapper.appendChild(foldBtn); }
       pre.scrollTop = pre.scrollHeight;
     });
   }
 
-  function showHtmlPreview(code) {
-    const old = document.querySelector('.preview-overlay'); if (old) old.remove();
-    const overlay = document.createElement('div'); overlay.className = 'preview-overlay';
-    overlay.innerHTML = `<div class="preview-box"><div class="preview-header"><span>HTML 预览</span><button class="preview-close">✕</button></div><iframe class="preview-iframe" srcdoc="${code.replace(/"/g,'&quot;').replace(/</g,'&lt;')}" sandbox="allow-scripts"></iframe></div>`;
-    overlay.querySelector('.preview-close').onclick = () => overlay.remove();
-    overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
-    document.body.appendChild(overlay);
-  }
+  function showHtmlPreview(code) { const old = document.querySelector('.preview-overlay'); if (old) old.remove(); const overlay = document.createElement('div'); overlay.className = 'preview-overlay'; overlay.innerHTML = `<div class="preview-box"><div class="preview-header"><span>HTML 预览</span><button class="preview-close">✕</button></div><iframe class="preview-iframe" srcdoc="${code.replace(/"/g,'&quot;').replace(/</g,'&lt;')}" sandbox="allow-scripts"></iframe></div>`; overlay.querySelector('.preview-close').onclick = () => overlay.remove(); overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); }; document.body.appendChild(overlay); }
 
   function editMessage(row, bubble, msg) {
-    const orig = msg.content;
-    bubble.style.display = 'none';
-    const box = document.createElement('div'); box.className = 'edit-box';
-    const input = document.createElement('input'); input.value = orig; box.appendChild(input);
+    const orig = msg.content; bubble.style.display = 'none';
+    const box = document.createElement('div'); box.className = 'edit-box'; const input = document.createElement('input'); input.value = orig; box.appendChild(input);
     const saveBtn = document.createElement('button'); saveBtn.className = 'edit-btn save'; saveBtn.textContent = '保存并重发'; box.appendChild(saveBtn);
     const cancelBtn = document.createElement('button'); cancelBtn.className = 'edit-btn cancel'; cancelBtn.textContent = '取消'; box.appendChild(cancelBtn);
     row.appendChild(box); input.focus();
@@ -480,192 +390,95 @@
     saveBtn.onclick = () => {
       const newText = input.value.trim(); if (!newText) return;
       msg.content = newText; bubble.textContent = newText;
-      const conv = getConv(); const idx = conv.messages.indexOf(msg);
-      if (idx !== -1) conv.messages.splice(idx + 1);
+      const conv = getConv(); const idx = conv.messages.indexOf(msg); if (idx !== -1) conv.messages.splice(idx + 1);
       let n = row.nextSibling; while (n) { const t = n; n = n.nextSibling; t.remove(); }
       bubble.style.display = ''; box.remove();
       save(); sendInternal(true);
     };
   }
 
-  function appendUserMsg(text) {
-    const msg = { role: 'user', content: text };
-    getConv().messages.push(msg);
-    const row = createRow(msg);
-    chatMessages.appendChild(row);
-    scrollToBottom(true);
-    autoTitle();
-  }
+  // 流式输出核心（修复版）
+  function appendUserMsg(text) { const msg = { role: 'user', content: text }; getConv().messages.push(msg); const row = createRow(msg); chatMessages.appendChild(row); scrollToBottom(true); autoTitle(); }
 
-  function appendAssistantPlaceholder() {
-    const sid = 'sid_' + Date.now();
-    const msg = { role: 'assistant', content: '', reasoning: '', streamingId: sid };
-    getConv().messages.push(msg);
-    const row = createRow(msg);
-    chatMessages.appendChild(row);
-    return { bubble: row.querySelector('.message-bubble'), msg, sid };
-  }
+  function appendAssistantPlaceholder() { const sid = 'sid_' + Date.now(); const msg = { role: 'assistant', content: '', reasoning: '', streamingId: sid }; getConv().messages.push(msg); const row = createRow(msg); chatMessages.appendChild(row); return { bubble: row.querySelector('.message-bubble'), msg, sid }; }
 
   async function sendInternal(skipInput = false) {
-    if (!skipInput) {
-      const text = inputField.value.trim(); if (!text) return;
-      const conv = getConv(); if (!conv) { newConversation(); return; }
-      if (conv.abortController) { conv.abortController.abort(); conv.streaming = false; }
-      welcomeArea.style.display = 'none'; chatMessages.classList.add('active');
-      appendUserMsg(text); inputField.value = ''; inputField.style.height = 'auto';
-    }
+    if (!skipInput) { const text = inputField.value.trim(); if (!text) return; const conv = getConv(); if (!conv) { newConversation(); return; } if (conv.abortController) { conv.abortController.abort(); conv.streaming = false; } welcomeArea.style.display = 'none'; chatMessages.classList.add('active'); appendUserMsg(text); inputField.value = ''; inputField.style.height = 'auto'; }
     const conv = getConv(); if (!conv) return;
-    const msgs = conv.messages.slice();
-    conv.requestMessages = msgs;
+    const msgs = conv.messages.slice(); conv.requestMessages = msgs;
     const { bubble, msg: amsg, sid } = appendAssistantPlaceholder();
     await streamWithReconnect(conv, amsg, sid, msgs, 0, false);
   }
 
   async function streamWithReconnect(conv, amsg, sid, baseMsgs, retry, isResume = false) {
-    conv.abortController = new AbortController();
-    conv.streaming = true; renderSidebar(); updateSendBtn();
+    conv.abortController = new AbortController(); conv.streaming = true; renderSidebar(); updateSendBtn();
     let content = amsg.content || '', reasoning = amsg.reasoning || '';
-    let thinkingDetails = null;
-    let lastSave = Date.now();
-    let lastRender = 0; // 节流用
-
+    let thinkingDetails = null, lastSave = Date.now();
     const saveProgress = () => { if (Date.now() - lastSave > 2000) { lastSave = Date.now(); save(); } };
 
-    // 即时渲染函数（移除 requestAnimationFrame，直接调用，添加微节流）
+    // 直接更新 UI，不通过 RAF 延迟，实现即时流式显示
     const updateUI = () => {
-      const now = Date.now();
-      if (now - lastRender < 16) { // 大约60fps节流，保持流畅
-        if (!updateUI.pending) {
-          updateUI.pending = true;
-          requestAnimationFrame(() => { updateUI.pending = false; performUpdate(); });
-        }
-        return;
-      }
-      lastRender = now;
-      performUpdate();
-    };
-    updateUI.pending = false;
-
-    const performUpdate = () => {
-      const bubble = getBubbleBySid(sid);
-      if (!bubble) return;
-      if (reasoning && !thinkingDetails) {
-        thinkingDetails = document.createElement('details');
-        thinkingDetails.className = 'thinking-block';
-        thinkingDetails.open = true;
-        thinkingDetails.innerHTML = '<summary>💭 思考过程</summary><div class="thinking-text"></div>';
-        bubble.insertBefore(thinkingDetails, bubble.firstChild);
-      }
+      const bubble = getBubbleBySid(sid); if (!bubble) return;
+      if (reasoning && !thinkingDetails) { thinkingDetails = document.createElement('details'); thinkingDetails.className = 'thinking-block'; thinkingDetails.open = true; thinkingDetails.innerHTML = '<summary>💭 思考过程</summary><div class="thinking-text"></div>'; bubble.insertBefore(thinkingDetails, bubble.firstChild); }
       if (thinkingDetails) thinkingDetails.querySelector('.thinking-text').textContent = reasoning;
-      let ans = bubble.querySelector('.answer-body');
-      if (!ans) { ans = document.createElement('div'); ans.className = 'answer-body'; bubble.appendChild(ans); }
+      let ans = bubble.querySelector('.answer-body'); if (!ans) { ans = document.createElement('div'); ans.className = 'answer-body'; bubble.appendChild(ans); }
       ans.innerHTML = md(content);
       enhanceBubble(bubble);
-      if (!bubble.querySelector('.streaming-cursor')) {
-        const cursor = document.createElement('span'); cursor.className = 'streaming-cursor'; bubble.appendChild(cursor);
-      }
+      if (!bubble.querySelector('.streaming-cursor')) { const cursor = document.createElement('span'); cursor.className = 'streaming-cursor'; bubble.appendChild(cursor); }
       if (!userLockedScroll && conv.id === currentConvId) chatMessages.scrollTop = chatMessages.scrollHeight;
       saveProgress();
     };
 
     try {
       const msgsToSend = [...baseMsgs];
-      if ((retry > 0 || isResume) && content) {
-        msgsToSend.push({ role: 'assistant', content: content });
-        msgsToSend.push({ role: 'system', content: `【网络中断续传】请从上述已生成内容末尾继续，不要重复。` });
-      }
+      if ((retry > 0 || isResume) && content) { msgsToSend.push({ role: 'assistant', content: content }); msgsToSend.push({ role: 'system', content: `【网络中断续传】请从上述已生成内容末尾继续，不要重复。` }); }
 
-      const resp = await fetch(API_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: currentModel, messages: msgsToSend, temperature: 0.7, max_tokens: 8192 }),
-        signal: conv.abortController.signal
-      });
+      const resp = await fetch(API_ENDPOINT, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: currentModel, messages: msgsToSend, temperature: 0.7, max_tokens: 8192 }), signal: conv.abortController.signal });
       if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
 
-      const reader = resp.body.getReader();
-      const dec = new TextDecoder();
-      let buf = '';
-
+      const reader = resp.body.getReader(); const dec = new TextDecoder(); let buf = '';
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+        const { done, value } = await reader.read(); if (done) break;
         buf += dec.decode(value, { stream: true });
-        const lines = buf.split('\n');
-        buf = lines.pop() || '';
+        const lines = buf.split('\n'); buf = lines.pop() || '';
         for (const line of lines) {
-          const t = line.trim();
-          if (!t || !t.startsWith('data:')) continue;
-          const d = t.slice(5).trim();
-          if (d === '[DONE]') break;
+          const t = line.trim(); if (!t || !t.startsWith('data:')) continue;
+          const d = t.slice(5).trim(); if (d === '[DONE]') break;
           try {
-            const j = JSON.parse(d);
-            const delta = j.choices?.[0]?.delta || {};
+            const j = JSON.parse(d); const delta = j.choices?.[0]?.delta || {};
             if (delta.reasoning_content) reasoning += delta.reasoning_content;
             if (delta.content) content += delta.content;
-            amsg.reasoning = reasoning;
-            amsg.content = content;
-            updateUI(); // 立即调度渲染（带节流）
+            amsg.reasoning = reasoning; amsg.content = content;
+            // 直接调用 updateUI 以实现逐字显示
+            updateUI();
           } catch {}
         }
       }
-      // 最终渲染确保无遗漏
-      performUpdate();
-      const bubble = getBubbleBySid(sid);
-      if (bubble) { const c = bubble.querySelector('.streaming-cursor'); if (c) c.remove(); }
+      updateUI();
+      const bubble = getBubbleBySid(sid); if (bubble) { const c = bubble.querySelector('.streaming-cursor'); if (c) c.remove(); }
       if (thinkingDetails) thinkingDetails.open = false;
     } catch (e) {
-      if (e.name === 'AbortError') {
-        amsg.content = content + ' [已中止]';
-        performUpdate();
-      } else if (retry < MAX_RETRIES && !conv.abortController?.signal.aborted) {
-        await new Promise(r => setTimeout(r, RETRY_DELAY));
-        return streamWithReconnect(conv, amsg, sid, baseMsgs, retry + 1, isResume);
-      } else {
-        amsg.content = content + ' [连接失败]';
-        performUpdate();
-      }
+      if (e.name === 'AbortError') { amsg.content = content + ' [已中止]'; updateUI(); }
+      else if (retry < MAX_RETRIES && !conv.abortController?.signal.aborted) { await new Promise(r => setTimeout(r, RETRY_DELAY)); return streamWithReconnect(conv, amsg, sid, baseMsgs, retry + 1, isResume); }
+      else { amsg.content = content + ' [连接失败]'; updateUI(); }
     } finally {
-      if (retry >= MAX_RETRIES || !conv.streaming || retry === 0) {
-        conv.abortController = null; conv.streaming = false;
-        renderSidebar(); updateSendBtn(); save();
-      }
+      if (retry >= MAX_RETRIES || !conv.streaming || retry === 0) { conv.abortController = null; conv.streaming = false; renderSidebar(); updateSendBtn(); save(); }
     }
   }
 
   function sendMessage() { sendInternal(false); }
 
-  function updateSendBtn() {
-    const conv = getConv();
-    if (conv?.streaming && conv.id === currentConvId) {
-      sendBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16"><rect x="6" y="6" width="12" height="12" rx="2" fill="white"/></svg>';
-      sendBtn.style.background = '#ef4444'; sendBtn.onclick = () => conv.abortController?.abort();
-    } else {
-      sendBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>';
-      sendBtn.style.background = 'var(--primary)'; sendBtn.onclick = sendMessage;
-    }
-  }
+  function updateSendBtn() { const conv = getConv(); if (conv?.streaming && conv.id === currentConvId) { sendBtn.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16"><rect x="6" y="6" width="12" height="12" rx="2" fill="white"/></svg>'; sendBtn.style.background = '#ef4444'; sendBtn.onclick = () => conv.abortController?.abort(); } else { sendBtn.innerHTML = '<svg viewBox="0 0 24 24"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>'; sendBtn.style.background = 'var(--primary)'; sendBtn.onclick = sendMessage; } }
 
   function scrollToBottom(force) { if (force) userLockedScroll = false; if (!userLockedScroll) { chatMessages.scrollTop = chatMessages.scrollHeight; scrollBtn.classList.remove('visible'); } else scrollBtn.classList.add('visible'); }
 
-  chatMessages.addEventListener('scroll', () => {
-    const dist = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight;
-    userLockedScroll = dist > 50;
-    scrollBtn.classList.toggle('visible', userLockedScroll);
-  });
+  chatMessages.addEventListener('scroll', () => { const dist = chatMessages.scrollHeight - chatMessages.scrollTop - chatMessages.clientHeight; userLockedScroll = dist > 50; scrollBtn.classList.toggle('visible', userLockedScroll); });
   scrollBtn.onclick = () => scrollToBottom(true);
 
   inputField.addEventListener('input', function() { this.style.height = 'auto'; this.style.height = Math.min(this.scrollHeight, 100) + 'px'; });
   inputField.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } });
 
-  function setModel(model) {
-    currentModel = model;
-    deepThinkEnabled = (model === 'step-3.5-flash');
-    deepThinkChip.classList.toggle('active', deepThinkEnabled);
-    document.querySelectorAll('.model-chip').forEach(b => b.classList.toggle('active', b.dataset.model === model));
-    welcomeTitle.textContent = deepThinkEnabled ? '使用专家模式开始对话' : '使用快速模式开始对话';
-    headerTitle.textContent = getConv()?.title || '新对话';
-  }
+  function setModel(model) { currentModel = model; deepThinkEnabled = (model === 'step-3.5-flash'); deepThinkChip.classList.toggle('active', deepThinkEnabled); document.querySelectorAll('.model-chip').forEach(b => b.classList.toggle('active', b.dataset.model === model)); welcomeTitle.textContent = deepThinkEnabled ? '使用专家模式开始对话' : '使用快速模式开始对话'; headerTitle.textContent = getConv()?.title || '新对话'; }
 
   modelSwitcher.querySelectorAll('.model-chip').forEach(btn => btn.addEventListener('click', () => setModel(btn.dataset.model)));
   deepThinkChip.addEventListener('click', () => setModel(deepThinkEnabled ? 'auto' : 'step-3.5-flash'));
@@ -676,33 +489,21 @@
   closeSidebarBtn.addEventListener('click', closeSidebar);
   sidebarBackdrop.addEventListener('click', closeSidebar);
 
-  voiceBtn.addEventListener('click', () => {
-    const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SR) return alert('浏览器不支持语音识别');
-    const rec = new SR(); rec.lang = 'zh-CN'; rec.interimResults = false;
-    rec.onresult = (e) => { inputField.value = e.results[0][0].transcript; inputField.dispatchEvent(new Event('input')); };
-    rec.start();
-  });
+  voiceBtn.addEventListener('click', () => { const SR = window.SpeechRecognition || window.webkitSpeechRecognition; if (!SR) return alert('浏览器不支持语音识别'); const rec = new SR(); rec.lang = 'zh-CN'; rec.interimResults = false; rec.onresult = (e) => { inputField.value = e.results[0][0].transcript; inputField.dispatchEvent(new Event('input')); }; rec.start(); });
 
+  // 恢复未完成对话
   async function resumeStreams() {
     for (const conv of conversations) {
       if (conv.streaming && conv.requestMessages && conv.messages.length) {
         const last = conv.messages[conv.messages.length - 1];
-        if (last.role === 'assistant' && last.streamingId) {
-          console.log('恢复对话:', conv.id);
-          conv.abortController = new AbortController();
-          await streamWithReconnect(conv, last, last.streamingId, conv.requestMessages, 0, true);
-        }
+        if (last.role === 'assistant' && last.streamingId) { conv.abortController = new AbortController(); await streamWithReconnect(conv, last, last.streamingId, conv.requestMessages, 0, true); }
       }
     }
   }
 
   function init() {
-    const data = load();
-    conversations = (data.conversations || []).map(c => ({ ...c, abortController: null }));
-    currentConvId = data.currentId || (conversations[0]?.id || '');
-    if (!conversations.length) { const c = createConv(); conversations.push(c); currentConvId = c.id; }
-    else if (!conversations.find(c => c.id === currentConvId)) currentConvId = conversations[0].id;
+    const data = load(); conversations = (data.conversations || []).map(c => ({ ...c, abortController: null }));
+    currentConvId = data.currentId || (conversations[0]?.id || ''); if (!conversations.length) { const c = createConv(); conversations.push(c); currentConvId = c.id; } else if (!conversations.find(c => c.id === currentConvId)) currentConvId = conversations[0].id;
     save(); renderSidebar(); renderChat(); updateSendBtn();
     setTimeout(resumeStreams, 600);
   }
